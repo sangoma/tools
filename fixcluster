@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# This clears, if possible, any errors that may be associated with a FreePBX HA
+# cluster.
+
+# List of directories that should be symlinks
+SYMLINKS=(/etc/httpd /var/lib/php/session /var/www /var/log/asterisk /var/spool/asterisk /var/lib/asterisk /etc/asterisk /var/lib/mysql)
+DESTS=(/drbd/httpd/etc /drbd/httpd/session /drbd/httpd/www /drbd/asterisk/log /drbd/asterisk/spool /drbd/asterisk/lib /drbd/asterisk/etcasterisk /drbd/mysql)
+
+if [ "$1" = "--fixlinks" ]; then
+  FIXIT=yes
+fi
+
+STATUS=`pcs status 2>&1`
+if [ $? = 1 ]; then
+  echo "Cluster Services aren't running on this node! Aborting!"
+  echo "Attempting to continue will permanently and irrevocably destroy this machine."
+  echo "Please don't try to continue. Fix pcs first."
+  exit
+fi
+
+echo -n "Checking symlinks "
+c=${#SYMLINKS[@]}
+for (( i = 0; i < c; i++ ))
+do
+  link=${SYMLINKS[$i]}
+  if [ ! -h $link ]; then
+    if [ "$FIXIT" ]; then
+      rm -rf $link
+      ln -s ${DESTS[$i]} $link
+      echo -n !
+    else
+      echo -e "\nWarning: $link is NOT a symlink, and it should be. Run with --fixlinks to repair"
+    fi
+  else
+    echo -n .
+  fi
+done
+
+echo -en " Done\nClearing Errors "
+
+# Everything we want to clear
+IPS="spare_ip floating_ip mysql_ip asterisk_ip httpd_ip"
+MASTERS="ms-spare ms-mysql ms-asterisk ms-httpd"
+DRBD="drbd_asterisk drbd_mysql drbd_httpd drbd_spare"
+FS="spare_fs mysql_fs asterisk_fs httpd_fs"
+SERVICES="mysql_service asterisk_service httpd_service"
+
+# List of all the sections above
+ALL="IPS MASTERS DRBD FS SERVICES"
+
+for grp in $ALL; do
+  eval THIS=\$$grp
+  for i in $THIS; do
+    # Remove any errors for this resource on both nodes
+    crm_resource --resource $i -C --node freepbx-a > /dev/null 2>&1
+    crm_resource --resource $i -C --node freepbx-b > /dev/null 2>&1
+    echo -n "."
+  done
+done
+
+echo -en " Done\nRemoving Restraints "
+for grp in $ALL; do
+  eval THIS=\$$grp
+  for i in $THIS; do
+    # Remove any restraints
+    pcs resource clear $i
+    # And make sure it's started
+    pcs resource enable $i
+    echo -n "."
+  done
+done
+
+echo " Done"
